@@ -7,11 +7,11 @@ const config = {
     refresh_token: {
       cookie_name: "refresh_token",
       secret: "changeme",
-    }
+    },
   },
   server: {
     url: process.env.SERVER_URL ?? `http://localhost`,
-  }
+  },
 } as const;
 
 export default config;

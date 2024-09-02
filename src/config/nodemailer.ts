@@ -13,17 +13,16 @@ const createTestAccount = async () => {
       auth: {
         user: account.user,
         pass: account.pass,
-      }
+      },
     });
     console.log(account);
   } catch (error) {
     console.error(error);
   }
-}
+};
 
 if (config.node_env == "dev") {
   void createTestAccount();
 }
 
 export default transporter;
-

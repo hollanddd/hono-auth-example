@@ -10,18 +10,14 @@ import { logger } from "hono/logger";
 import { prettyJSON } from "hono/pretty-json";
 import { requestId } from "hono/request-id";
 import { StatusCodes as httpStatus } from "http-status-codes";
-import { z } from "zod";
 
 import config from "./config/config.js";
-import {
-  sendResetEmail,
-  sendVerifyEmail
-} from "./services/email.js";
+import { sendResetEmail, sendVerifyEmail } from "./services/email.js";
 import {
   createUser,
   getUser,
   updateUserPassword,
-  validateUserEmail
+  validateUserEmail,
 } from "./services/user.js";
 
 import {
@@ -36,27 +32,17 @@ import {
   purgeEmailVerificationTokens,
   purgeRefreshTokens,
   purgeResetToken,
-  saveRefreshToken
+  saveRefreshToken,
 } from "./services/auth.js";
 import { createAccessToken, createRefreshToken } from "./services/token.js";
 
-const LoginRequest = z.object({
-  email: z.string(),
-  password: z.string(),
-});
-
-const SignUpRequest = z.object({
-  username: z.string(),
-  email: z.string().email(),
-  password: z.string().min(8),
-  confirmPassword: z.string().min(8),
-}).superRefine(({ password, confirmPassword }, ctx) => {
-  if (password != confirmPassword) ctx.addIssue({
-    code: "custom",
-    message: "The password did not match",
-    path: ["confirmPassword"],
-  });
-});
+import {
+  ForgotPasswordRequest,
+  LoginRequest,
+  PasswordResetRequest,
+  SendVerificationEmailRequest,
+  SignUpRequest,
+} from "./schemas/auth.schema.js";
 
 const { printMetrics, registerMetrics } = prometheus();
 
@@ -75,7 +61,7 @@ app.get("/protected/ident", async (c) => {
 
 app.post("/auth/signup", validator("json", SignUpRequest), async (c) => {
   const data = c.req.valid("json");
-  const exists = await checkUserEmail(data.email)
+  const exists = await checkUserEmail(data.email);
   if (exists) return c.json({ success: false }, httpStatus.CONFLICT);
 
   try {
@@ -94,16 +80,19 @@ app.post("/auth/login", validator("json", LoginRequest), async (c) => {
   const data = c.req.valid("json");
   const user = await getUser(data.email);
   if (!user) return c.json(httpStatus.FORBIDDEN);
-  if (!user.emailVerified) return c.json({
-    message: "You must verify your email address before you can log in.",
-  }, httpStatus.FORBIDDEN);
+  if (!user.emailVerified)
+    return c.json(
+      {
+        message: "You must verify your email address before you can log in.",
+      },
+      httpStatus.FORBIDDEN,
+    );
 
   try {
     if (await argon.verify(user.password, data.password)) {
-
       const tokenFromCookie = getCookie(
         c,
-        config.jwt.refresh_token.cookie_name
+        config.jwt.refresh_token.cookie_name,
       );
 
       if (tokenFromCookie) {
@@ -121,43 +110,32 @@ app.post("/auth/login", validator("json", LoginRequest), async (c) => {
         });
       }
 
-      const [
-        accessToken,
-        refreshToken,
-      ] = await Promise.all([
+      const [accessToken, refreshToken] = await Promise.all([
         createAccessToken(user.id),
         createRefreshToken(user.id),
       ]);
 
       await saveRefreshToken(refreshToken, user.id);
 
-      setCookie(
-        c,
-        config.jwt.refresh_token.cookie_name,
-        refreshToken,
-        {
-          httpOnly: true,
-          sameSite: "none",
-          secure: true,
-          maxAge: 24 * 3600
-        }
-      )
+      setCookie(c, config.jwt.refresh_token.cookie_name, refreshToken, {
+        httpOnly: true,
+        sameSite: "none",
+        secure: true,
+        maxAge: 24 * 3600,
+      });
 
       return c.json({ success: true, accessToken });
     } else {
       return c.json({ success: false }, httpStatus.UNAUTHORIZED);
     }
   } catch (error) {
-    console.log(error)
+    console.error(error);
     return c.json({ success: false }, httpStatus.INTERNAL_SERVER_ERROR);
   }
 });
 
 app.post("/auth/logout", async (c) => {
-  const tokenFromCookie = getCookie(
-    c,
-    config.jwt.refresh_token.cookie_name
-  );
+  const tokenFromCookie = getCookie(c, config.jwt.refresh_token.cookie_name);
 
   if (!tokenFromCookie) return c.json({ success: true }, httpStatus.NO_CONTENT);
   const refreshToken = checkRefreshToken(tokenFromCookie);
@@ -183,10 +161,7 @@ app.post("/auth/logout", async (c) => {
 });
 
 app.post("/auth/refresh", async (c) => {
-  const refreshToken = getCookie(
-    c,
-    config.jwt.refresh_token.cookie_name
-  );
+  const refreshToken = getCookie(c, config.jwt.refresh_token.cookie_name);
 
   if (!refreshToken) c.json({ success: false }, httpStatus.UNAUTHORIZED);
 
@@ -201,13 +176,13 @@ app.post("/auth/refresh", async (c) => {
     try {
       const payload = await verify(
         refreshToken as string,
-        config.jwt.refresh_token.secret
+        config.jwt.refresh_token.secret,
       );
-      await purgeRefreshTokens(payload.sub as string)
+      await purgeRefreshTokens(payload.sub as string);
     } catch (error) {
       console.error(error);
     } finally {
-      return c.json({ success: false }, httpStatus.FORBIDDEN)
+      return c.json({ success: false }, httpStatus.FORBIDDEN);
     }
   }
 
@@ -220,66 +195,70 @@ app.post("/auth/refresh", async (c) => {
     );
 
     if (payload.sub != found.userId) {
-      return c.json({ success: false }, httpStatus.FORBIDDEN)
+      return c.json({ success: false }, httpStatus.FORBIDDEN);
     }
 
-    const [
-      accessToken,
-      newRefreshToken,
-    ] = await Promise.all([
+    const [accessToken, newRefreshToken] = await Promise.all([
       createAccessToken(found.userId),
       createRefreshToken(found.userId),
     ]);
 
     await saveRefreshToken(newRefreshToken, found.userId);
 
-    setCookie(
-      c,
-      config.jwt.refresh_token.cookie_name,
-      newRefreshToken,
-      {
-        httpOnly: true,
-        sameSite: "none",
-        secure: true,
-        maxAge: 24 * 60 * 60 * 1000
-      }
-    )
+    setCookie(c, config.jwt.refresh_token.cookie_name, newRefreshToken, {
+      httpOnly: true,
+      sameSite: "none",
+      secure: true,
+      maxAge: 24 * 60 * 60 * 1000,
+    });
 
     return c.json({ success: true, accessToken });
   } catch (error) {
     console.error(error);
-    return c.json({ success: true }, httpStatus.FORBIDDEN)
+    return c.json({ success: true }, httpStatus.FORBIDDEN);
   }
 });
 
-const SendVerificationEmail = z.object({
-  email: z.string().email(),
-})
+app.post(
+  "send-verification-email",
+  validator("json", SendVerificationEmailRequest),
+  async (c) => {
+    const data = c.req.valid("json");
+    const user = await getUser(data.email);
+    if (!user)
+      return c.json(
+        {
+          success: false,
+          cause: "Email not found",
+        },
+        httpStatus.UNAUTHORIZED,
+      );
 
-app.post("send-verification-email", validator("json", SendVerificationEmail), async (c) => {
-  const data = c.req.valid("json");
-  const user = await getUser(data.email);
-  if (!user) return c.json({
-    success: false,
-    cause: "Email not found",
-  }, httpStatus.UNAUTHORIZED);
+    if (user.emailVerified)
+      return c.json(
+        {
+          success: false,
+          cuase: "Email already verified",
+        },
+        httpStatus.CONFLICT,
+      );
 
-  if (user.emailVerified) return c.json({
-    success: false,
-    cuase: "Email already verified",
-  }, httpStatus.CONFLICT);
+    const existing = await getExistingVerificationToken(user.id);
 
-  const existing = await getExistingVerificationToken(user.id);
+    if (existing)
+      return c.json(
+        {
+          success: false,
+          cause: "Verification email already sent",
+        },
+        httpStatus.BAD_REQUEST,
+      );
 
-  if (existing) return c.json({
-    success: false,
-    cause: "Verification email already sent",
-  }, httpStatus.BAD_REQUEST);
-
-  const verification = await createEmailVerificationToken(user.id);
-  sendVerifyEmail(user.email, verification.token);
-  return c.json({ success: true });
-})
+    const verification = await createEmailVerificationToken(user.id);
+    sendVerifyEmail(user.email, verification.token);
+    return c.json({ success: true });
+  },
+);
 
 app.post("verify-email/:token", async (c) => {
   const verificationToken = c.req.param("token");
@@ -290,10 +269,13 @@ app.post("verify-email/:token", async (c) => {
   const token = await getEmailVerificationToken(verificationToken);
 
   if (!token || token.expiresAt < new Date()) {
-    return c.json({
-      success: false,
-      message: "Invalid or expired token"
-    }, httpStatus.NOT_FOUND);
+    return c.json(
+      {
+        success: false,
+        message: "Invalid or expired token",
+      },
+      httpStatus.NOT_FOUND,
+    );
   }
 
   validateUserEmail(token.userId);
@@ -301,60 +283,71 @@ app.post("verify-email/:token", async (c) => {
   return c.json({ success: true });
 });
 
-const ForgotPasswordRequest = z.object({
-  email: z.string().email(),
-});
+app.post(
+  "/forgot-password",
+  validator("json", ForgotPasswordRequest),
+  async (c) => {
+    const data = c.req.valid("json");
 
-app.post("/forgot-password", validator("json", ForgotPasswordRequest), async (c) => {
-  const data = c.req.valid("json");
+    if (!data.email)
+      return c.json(
+        {
+          success: false,
+          cause: "Email is required",
+        },
+        httpStatus.BAD_REQUEST,
+      );
 
-  if (!data.email) return c.json({
-    success: false,
-    cause: "Email is required",
-  }, httpStatus.BAD_REQUEST);
+    const user = await getUser(data.email);
 
-  const user = await getUser(data.email);
+    if (!user || !user.emailVerified)
+      return c.json(
+        {
+          success: false,
+          cause: "Email not validated",
+        },
+        httpStatus.UNAUTHORIZED,
+      );
 
-  if (!user || !user.emailVerified) return c.json({
-    success: false,
-    cause: "Email not validated",
-  }, httpStatus.UNAUTHORIZED);
+    const resetToken = await createResetToken(user.id);
 
-  const resetToken = await createResetToken(user.id);
+    sendResetEmail(data.email, resetToken.token);
 
-  sendResetEmail(data.email, resetToken.token);
+    return c.json({ success: true });
+  },
+);
 
-  return c.json({ success: true });
-});
+app.post(
+  "/reset-password/:token",
+  validator("json", PasswordResetRequest),
+  async (c) => {
+    const data = c.req.valid("json");
+    const token = c.req.param("password");
 
-const PasswordResetRequest = z.object({
-  password: z.string().min(8),
-});
+    if (!token) return c.json({ success: false }, httpStatus.NOT_FOUND);
 
-app.post("/reset-password/:token", validator("json", PasswordResetRequest), async (c) => {
-  const data = c.req.valid("json");
-  const token = c.req.param("password");
+    const resetToken = await getResetToken(token);
 
-  if (!token) return c.json({ success: false }, httpStatus.NOT_FOUND);
+    if (!resetToken)
+      return c.json(
+        {
+          success: false,
+          cause: "Invalid or expired token",
+        },
+        httpStatus.NOT_FOUND,
+      );
 
-  const resetToken = await getResetToken(token);
+    const hashedPassword = await argon.hash(data.password);
+    await Promise.all([
+      updateUserPassword(resetToken.userId, hashedPassword),
+      purgeResetToken(resetToken.userId),
+      purgeRefreshTokens(resetToken.userId),
+    ]);
 
-  if (!resetToken) return c.json({
-    success: false,
-    cause: "Invalid or expired token",
-  }, httpStatus.NOT_FOUND);
-
-  const hashedPassword = await argon.hash(data.password);
-  await Promise.all([
-    updateUserPassword(resetToken.userId, hashedPassword),
-    purgeResetToken(resetToken.userId),
-    purgeRefreshTokens(resetToken.userId),
-  ]);
-
-  return c.json({ success: true });
-});
+    return c.json({ success: true });
+  },
+);
 
 serve(app, (info) => {
   console.log(`listening on https://localhost:${info.port}`);
 });
-
