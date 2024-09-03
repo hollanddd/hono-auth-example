@@ -45,6 +45,8 @@
   "dependencies": {
     "@hono/node-server": "^1.12.2",
     "@hono/prometheus": "^1.0.1",
+    "@hono/swagger-ui": "^0.4.1",
+    "@hono/zod-openapi": "^0.16.0",
     "@hono/zod-validator": "^0.2.2",
     "@node-rs/argon2": "^1.8.3",
     "@prisma/client": "^5.19.0",
